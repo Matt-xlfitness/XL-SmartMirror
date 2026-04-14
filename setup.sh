@@ -1,7 +1,8 @@
 #!/bin/bash
 # ══════════════════════════════════════════════════
 #  XL Fitness Smart Mirror — One-Click Setup
-#  Raspberry Pi 4 + Bullseye (Legacy 64-bit)
+#  Raspberry Pi 4 + Bookworm (Legacy 64-bit)
+#  Requires 16GB+ SD card
 # ══════════════════════════════════════════════════
 
 set -e
@@ -17,7 +18,7 @@ sudo apt update -y && sudo apt upgrade -y
 
 # ── Install Python dependencies ───────────────────
 echo "[2/5] Installing Python dependencies..."
-pip3 install mediapipe-rpi4 opencv-python --break-system-packages
+pip3 install mediapipe opencv-python --break-system-packages
 
 # ── Clone the repo ────────────────────────────────
 echo "[3/5] Downloading XL Smart Mirror..."
