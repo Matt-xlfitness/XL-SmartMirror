@@ -2,10 +2,10 @@
 """
 XL Fitness Smart Mirror — Raspberry Pi 4
 =========================================
-Uses MediaPipe Pose (mediapipe-rpi4) for smooth 10-15fps pose detection.
+Uses TFLite + MoveNet Lightning for fast pose detection on ARM.
 
 Requirements:
-    pip3 install opencv-python mediapipe-rpi4 --break-system-packages
+    pip3 install tflite-runtime opencv-python numpy --break-system-packages
 
 Usage:
     python3 smart_mirror.py
@@ -35,6 +35,9 @@ ASSET_FILES = {
     "logo":        "SMARTMIRROR.png",
 }
 
+MOVENET_MODEL_URL = "https://storage.googleapis.com/movenet/MoveNet.SinglePose.Lightning.tflite"
+MOVENET_MODEL_FILE = "movenet_lightning.tflite"
+
 # ── Hype content ──────────────────────────────────────────────────────────────
 
 HYPE_MSGS = [
@@ -55,23 +58,35 @@ COMPLIMENTS = [
     "Absolutely nailed it!",
 ]
 
-# ── MediaPipe landmark indices ────────────────────────────────────────────────
-# https://developers.google.com/mediapipe/solutions/vision/pose_landmarker
-MP_NOSE          = 0
-MP_L_SHOULDER    = 11
-MP_R_SHOULDER    = 12
-MP_L_ELBOW       = 13
-MP_R_ELBOW       = 14
-MP_L_WRIST       = 15
-MP_R_WRIST       = 16
-MP_L_HIP         = 23
-MP_R_HIP         = 24
+# ── MoveNet keypoint indices (COCO 17) ───────────────────────────────────────
+# https://www.tensorflow.org/hub/tutorials/movenet
+KP_NOSE          = 0
+KP_L_EYE         = 1
+KP_R_EYE         = 2
+KP_L_EAR         = 3
+KP_R_EAR         = 4
+KP_L_SHOULDER    = 5
+KP_R_SHOULDER    = 6
+KP_L_ELBOW       = 7
+KP_R_ELBOW       = 8
+KP_L_WRIST       = 9
+KP_R_WRIST       = 10
+KP_L_HIP         = 11
+KP_R_HIP         = 12
+KP_L_KNEE        = 13
+KP_R_KNEE        = 14
+KP_L_ANKLE       = 15
+KP_R_ANKLE       = 16
 
 SKELETON_CONNECTIONS = [
-    (11,12),(11,13),(13,15),(12,14),(14,16),  # arms
-    (11,23),(12,24),(23,24),                   # torso
-    (23,25),(25,27),(24,26),(26,28),           # legs
-    (0,11),(0,12),                             # head to shoulders
+    (KP_L_SHOULDER, KP_R_SHOULDER),                          # shoulders
+    (KP_L_SHOULDER, KP_L_ELBOW), (KP_L_ELBOW, KP_L_WRIST),  # left arm
+    (KP_R_SHOULDER, KP_R_ELBOW), (KP_R_ELBOW, KP_R_WRIST),  # right arm
+    (KP_L_SHOULDER, KP_L_HIP),   (KP_R_SHOULDER, KP_R_HIP), # torso sides
+    (KP_L_HIP, KP_R_HIP),                                    # hips
+    (KP_L_HIP, KP_L_KNEE),       (KP_L_KNEE, KP_L_ANKLE),   # left leg
+    (KP_R_HIP, KP_R_KNEE),       (KP_R_KNEE, KP_R_ANKLE),   # right leg
+    (KP_NOSE, KP_L_SHOULDER),    (KP_NOSE, KP_R_SHOULDER),   # head
 ]
 
 # ── Download helpers ──────────────────────────────────────────────────────────
@@ -109,6 +124,53 @@ def load_assets():
         else:
             assets[key] = None
     return assets
+
+def load_movenet_model():
+    """Download and load MoveNet Lightning TFLite model."""
+    model_path = os.path.join(ASSETS_DIR, MOVENET_MODEL_FILE)
+    if not download_if_missing(MOVENET_MODEL_URL, model_path, "MoveNet model"):
+        print("ERROR: Could not download MoveNet model.")
+        sys.exit(1)
+
+    try:
+        from tflite_runtime.interpreter import Interpreter
+    except ImportError:
+        print("ERROR: tflite-runtime not installed.")
+        print("Run: pip3 install tflite-runtime --break-system-packages")
+        sys.exit(1)
+
+    interpreter = Interpreter(model_path=model_path, num_threads=4)
+    interpreter.allocate_tensors()
+    return interpreter
+
+# ── MoveNet inference ─────────────────────────────────────────────────────────
+
+def run_movenet(interpreter, frame):
+    """
+    Run MoveNet on a frame. Returns keypoints as (17, 3) array:
+    each row is [y, x, confidence] in normalized 0-1 coords.
+    Returns None if inference fails.
+    """
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    input_shape = input_details[0]['shape']  # [1, 192, 192, 3]
+    input_h, input_w = input_shape[1], input_shape[2]
+
+    # Resize and prepare input
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (input_w, input_h))
+
+    if input_details[0]['dtype'] == np.uint8:
+        input_data = np.expand_dims(img, axis=0).astype(np.uint8)
+    else:
+        input_data = np.expand_dims(img, axis=0).astype(np.float32)
+
+    interpreter.set_tensor(input_details[0]['index'], input_data)
+    interpreter.invoke()
+
+    keypoints = interpreter.get_tensor(output_details[0]['index'])
+    return keypoints[0][0]  # shape: (17, 3) — [y, x, confidence]
 
 # ── Image overlay ─────────────────────────────────────────────────────────────
 
@@ -184,83 +246,82 @@ def draw_bubble(frame, text, cx, cy, scale=0.85):
 
 # ── Skeleton drawing ──────────────────────────────────────────────────────────
 
-def draw_skeleton(frame, landmarks, w, h, threshold=0.5):
-    if landmarks is None:
+def draw_skeleton(frame, keypoints, w, h, threshold=0.3):
+    """Draw skeleton from MoveNet keypoints (17, 3) array."""
+    if keypoints is None:
         return
-    lm = landmarks.landmark
 
     # Draw bones
     for (i, j) in SKELETON_CONNECTIONS:
-        if i >= len(lm) or j >= len(lm):
+        ky_a, kx_a, kc_a = keypoints[i]
+        ky_b, kx_b, kc_b = keypoints[j]
+        if kc_a < threshold or kc_b < threshold:
             continue
-        a, b = lm[i], lm[j]
-        if a.visibility < threshold or b.visibility < threshold:
-            continue
-        x1, y1 = int(a.x * w), int(a.y * h)
-        x2, y2 = int(b.x * w), int(b.y * h)
-        cv2.line(frame, (x1,y1), (x2,y2), (51, 87, 255), 3, cv2.LINE_AA)
+        x1, y1 = int(kx_a * w), int(ky_a * h)
+        x2, y2 = int(kx_b * w), int(ky_b * h)
+        cv2.line(frame, (x1, y1), (x2, y2), (51, 87, 255), 3, cv2.LINE_AA)
 
     # Draw joints
-    for lmk in lm:
-        if lmk.visibility > threshold:
-            cx, cy = int(lmk.x * w), int(lmk.y * h)
+    for i in range(17):
+        ky, kx, kc = keypoints[i]
+        if kc > threshold:
+            cx, cy = int(kx * w), int(ky * h)
             cv2.circle(frame, (cx, cy), 5, (51, 87, 255), -1, cv2.LINE_AA)
 
 # ── Pose detection helpers ────────────────────────────────────────────────────
 
-def has_upper_body(landmarks, threshold=0.4):
+def has_upper_body(keypoints, threshold=0.3):
     """Returns True if at least 3 upper body landmarks are visible."""
-    if landmarks is None:
+    if keypoints is None:
         return False
-    lm = landmarks.landmark
-    upper = [MP_L_SHOULDER, MP_R_SHOULDER, MP_L_ELBOW, MP_R_ELBOW, MP_L_WRIST, MP_R_WRIST]
-    count = sum(1 for i in upper if lm[i].visibility > threshold)
+    upper = [KP_L_SHOULDER, KP_R_SHOULDER, KP_L_ELBOW, KP_R_ELBOW, KP_L_WRIST, KP_R_WRIST]
+    count = sum(1 for i in upper if keypoints[i][2] > threshold)
     return count >= 3
 
-def has_bicep_flex(landmarks, threshold=0.35):
+def has_bicep_flex(keypoints, threshold=0.25):
     """
     Detects double bicep flex OR arms raised above head.
     Very lenient — designed for a camera at floor level pointing up.
+    MoveNet keypoints are [y, x, confidence] in normalized coords.
     """
-    if landmarks is None:
-        return False
-    lm = landmarks.landmark
-
-    ls = lm[MP_L_SHOULDER]
-    rs = lm[MP_R_SHOULDER]
-    le = lm[MP_L_ELBOW]
-    re = lm[MP_R_ELBOW]
-    lw = lm[MP_L_WRIST]
-    rw = lm[MP_R_WRIST]
-    nose = lm[MP_NOSE]
-
-    if ls.visibility < threshold or rs.visibility < threshold:
+    if keypoints is None:
         return False
 
-    shoulder_width = abs(ls.x - rs.x)
+    ls_y, ls_x, ls_c = keypoints[KP_L_SHOULDER]
+    rs_y, rs_x, rs_c = keypoints[KP_R_SHOULDER]
+    le_y, le_x, le_c = keypoints[KP_L_ELBOW]
+    re_y, re_x, re_c = keypoints[KP_R_ELBOW]
+    lw_y, lw_x, lw_c = keypoints[KP_L_WRIST]
+    rw_y, rw_x, rw_c = keypoints[KP_R_WRIST]
+    nose_y, nose_x, nose_c = keypoints[KP_NOSE]
+
+    if ls_c < threshold or rs_c < threshold:
+        return False
+
+    shoulder_width = abs(ls_x - rs_x)
     if shoulder_width < 0.05:
         return False
 
-    shoulder_mid_y = (ls.y + rs.y) / 2
+    shoulder_mid_y = (ls_y + rs_y) / 2
     score = 0
 
     # Left elbow wide of left shoulder
-    if le.visibility > threshold:
-        if le.x < ls.x - shoulder_width * 0.05:
-            if abs(le.y - shoulder_mid_y) < shoulder_width * 1.5:
+    if le_c > threshold:
+        if le_x < ls_x - shoulder_width * 0.05:
+            if abs(le_y - shoulder_mid_y) < shoulder_width * 1.5:
                 score += 1
 
     # Right elbow wide of right shoulder
-    if re.visibility > threshold:
-        if re.x > rs.x + shoulder_width * 0.05:
-            if abs(re.y - shoulder_mid_y) < shoulder_width * 1.5:
+    if re_c > threshold:
+        if re_x > rs_x + shoulder_width * 0.05:
+            if abs(re_y - shoulder_mid_y) < shoulder_width * 1.5:
                 score += 1
 
     # Arms raised above head fallback
-    head_y = nose.y if nose.visibility > threshold else shoulder_mid_y - shoulder_width * 0.5
-    if lw.visibility > threshold and lw.y < head_y:
+    head_y = nose_y if nose_c > threshold else shoulder_mid_y - shoulder_width * 0.5
+    if lw_c > threshold and lw_y < head_y:
         score += 1
-    if rw.visibility > threshold and rw.y < head_y:
+    if rw_c > threshold and rw_y < head_y:
         score += 1
 
     return score >= 1
@@ -369,19 +430,14 @@ def main():
     print("  XL Fitness Smart Mirror")
     print("=" * 50)
 
-    # Import MediaPipe
-    try:
-        import mediapipe as mp
-        mp_pose = mp.solutions.pose
-        print(f"✓ MediaPipe {mp.__version__} loaded")
-    except ImportError:
-        print("ERROR: mediapipe not installed.")
-        print("Run: pip3 install mediapipe-rpi4 --break-system-packages")
-        sys.exit(1)
-
     # Load assets
     assets = load_assets()
     logo_raw = assets.get("logo")
+
+    # Load MoveNet model
+    print("\nLoading MoveNet pose model...")
+    interpreter = load_movenet_model()
+    print("✓ MoveNet Lightning loaded")
 
     # Open camera
     print("\nOpening camera...")
@@ -431,23 +487,13 @@ def main():
         logo_resized = cv2.resize(logo_raw, (logo_w, logo_h), interpolation=cv2.INTER_AREA)
         logo_img = invert_logo(logo_resized)
 
-    # Init MediaPipe Pose
-    pose = mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=0,          # 0 = fastest (Lite model)
-        smooth_landmarks=True,
-        enable_segmentation=False,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
-
     # Fullscreen window
     win = "XL Fitness Smart Mirror"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     sm = MirrorSM()
-    landmarks = None
+    keypoints = None
     frame_n = 0
     fps_t = time.time()
     fps_count = 0
@@ -469,13 +515,10 @@ def main():
 
         # ── Pose inference every 2nd frame ──
         if frame_n % 2 == 0:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
-            result = pose.process(rgb)
-            landmarks = result.pose_landmarks
+            keypoints = run_movenet(interpreter, frame)
 
-        person = has_upper_body(landmarks)
-        flex   = has_bicep_flex(landmarks)
+        person = has_upper_body(keypoints)
+        flex   = has_bicep_flex(keypoints)
         sm.update(person, flex)
 
         # ── Scale camera to screen (cover) ──
@@ -488,10 +531,9 @@ def main():
         display = display[oy:oy+screen_h, ox:ox+screen_w]
 
         # ── Skeleton overlay ──
-        if landmarks:
-            draw_skeleton(display, landmarks,
-                          w=screen_w, h=screen_h,
-                          threshold=0.4)
+        draw_skeleton(display, keypoints,
+                      w=screen_w, h=screen_h,
+                      threshold=0.3)
 
         # ── Logo top-centre ──
         if logo_img is not None:
@@ -537,7 +579,6 @@ def main():
         if key in (ord('q'), ord('Q'), 27):
             break
 
-    pose.close()
     cap.release()
     cv2.destroyAllWindows()
     print("Goodbye!")

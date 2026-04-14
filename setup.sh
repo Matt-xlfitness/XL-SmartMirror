@@ -18,7 +18,7 @@ sudo apt update -y && sudo apt upgrade -y
 
 # ── Install Python dependencies ───────────────────
 echo "[2/5] Installing Python dependencies..."
-pip3 install mediapipe opencv-python --break-system-packages
+pip3 install tflite-runtime opencv-python numpy --break-system-packages
 
 # ── Clone the repo ────────────────────────────────
 echo "[3/5] Downloading XL Smart Mirror..."
@@ -31,12 +31,13 @@ else
     cd XL-SmartMirror
 fi
 
-# ── Download assets ───────────────────────────────
-echo "[4/5] Pre-downloading avatar assets..."
+# ── Download assets + model ───────────────────────
+echo "[4/5] Pre-downloading assets and MoveNet model..."
 python3 -c "
 import smart_mirror
 smart_mirror.load_assets()
-print('Assets ready!')
+smart_mirror.load_movenet_model()
+print('Assets & model ready!')
 "
 
 # ── Setup autostart (optional) ────────────────────
