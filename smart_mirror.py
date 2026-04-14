@@ -479,7 +479,7 @@ def main():
             continue
         scaled_avatars[key] = resize_asset(img, av_h)
 
-    logo_h = int(screen_h * 0.12)
+    logo_h = int(screen_h * 0.48)
     logo_img = None
     if logo_raw is not None:
         lh, lw = logo_raw.shape[:2]
