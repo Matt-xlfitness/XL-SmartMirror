@@ -35,7 +35,7 @@ ASSET_FILES = {
     "logo":        "SMARTMIRROR.png",
 }
 
-MOVENET_MODEL_URL = "https://storage.googleapis.com/movenet/MoveNet.SinglePose.Lightning.tflite"
+MOVENET_MODEL_URL = "https://raw.githubusercontent.com/Matt-xlfitness/XL-SmartMirror/main/assets/movenet_lightning.tflite"
 MOVENET_MODEL_FILE = "movenet_lightning.tflite"
 
 # ── Hype content ──────────────────────────────────────────────────────────────
