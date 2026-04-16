@@ -41,13 +41,6 @@ ASSET_FILES = {
 MOVENET_URL = "https://raw.githubusercontent.com/Matt-xlfitness/XL-SmartMirror/main/assets/movenet_lightning.tflite"
 MOVENET_FILE = "movenet_lightning.tflite"
 
-PROMPTS = [
-    "Strike a double bicep flex!",
-    "Show me those guns!",
-    "Hit a flex — arms out wide!",
-    "Let's see that pose!",
-]
-
 HYPE_MSGS = [
     "BEAST MODE!",
     "ABSOLUTE UNIT!",
@@ -59,9 +52,10 @@ HYPE_MSGS = [
     "LEGENDARY!",
 ]
 
-CELEBRATION_SECONDS = 3.5
-COOLDOWN_SECONDS    = 2.0
-PROMPT_ROTATE_SECONDS = 5.0
+CELEBRATION_SECONDS     = 3.5
+COOLDOWN_SECONDS        = 2.0
+STRIKE_PROMPT_SECONDS   = 3.0  # "Strike a pose!" shown for this long
+                               # then swaps to "Like this!" + example pose avatar
 
 # ── MoveNet keypoint indices (COCO 17) ────────────────────────────────────────
 KP_NOSE, KP_L_SHOULDER, KP_R_SHOULDER = 0, 5, 6
@@ -328,13 +322,13 @@ def main():
     cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     # State
-    keypoints         = None
-    celebrating_until = 0.0
-    cooldown_until    = 0.0
-    current_hype      = ""
-    current_prompt    = random.choice(PROMPTS)
-    prompt_rotated_at = time.time()
-    pulse_t           = 0.0
+    keypoints           = None
+    celebrating_until   = 0.0
+    cooldown_until      = 0.0
+    current_hype        = ""
+    idle_cycle_started  = time.time()  # resets after each celebration
+    was_celebrating     = False
+    pulse_t             = 0.0
 
     frame_n = 0
     fps_t, fps_count, fps_disp = time.time(), 0, 0
@@ -359,10 +353,10 @@ def main():
         celebrating = now < celebrating_until
         person_here = has_upper_body(keypoints)
 
-        # Rotate prompt every few seconds when idle
-        if not celebrating and now - prompt_rotated_at >= PROMPT_ROTATE_SECONDS:
-            current_prompt = random.choice(PROMPTS)
-            prompt_rotated_at = now
+        # Restart idle cycle the moment celebration ends
+        if was_celebrating and not celebrating:
+            idle_cycle_started = now
+        was_celebrating = celebrating
 
         # Flex detection (only when not celebrating + cooldown expired)
         if not celebrating and now >= cooldown_until:
@@ -372,6 +366,7 @@ def main():
                 current_hype      = random.choice(HYPE_MSGS)
                 pulse_t           = now
                 celebrating       = True
+                was_celebrating   = True
 
         # Scale camera to screen
         display = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_LINEAR)
@@ -408,8 +403,17 @@ def main():
 
         # ── IDLE / PROMPTING ───────────────────────────
         else:
-            # Choose avatar: waving when nobody, pointing when someone is there
-            av_key = "point" if person_here else "wave"
+            # Two-phase prompt:
+            #   Phase 1 (first STRIKE_PROMPT_SECONDS): "Strike a pose!" + wave/point
+            #   Phase 2 (after that): "Like this!" + pose-example avatar
+            elapsed = now - idle_cycle_started
+            if elapsed < STRIKE_PROMPT_SECONDS:
+                prompt_text = "Strike a pose!"
+                av_key = "point" if person_here else "wave"
+            else:
+                prompt_text = "Like this!"
+                av_key = "pose"
+
             av = avatars.get(av_key)
             if av is None:
                 av = avatars.get("pose")
@@ -421,7 +425,7 @@ def main():
                 # Speech bubble above avatar
                 bx = ax + av.shape[1] // 2
                 by = ay - 30
-                draw_bubble(display, current_prompt, bx, by, scale=1.2, thickness=2)
+                draw_bubble(display, prompt_text, bx, by, scale=1.2, thickness=2)
 
         # FPS
         if now - fps_t >= 1.0:
