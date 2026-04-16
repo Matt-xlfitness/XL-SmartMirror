@@ -410,7 +410,9 @@ def main():
         else:
             # Choose avatar: waving when nobody, pointing when someone is there
             av_key = "point" if person_here else "wave"
-            av = avatars.get(av_key) or avatars.get("pose")
+            av = avatars.get(av_key)
+            if av is None:
+                av = avatars.get("pose")
             if av is not None:
                 ax = screen_w - av.shape[1] - 20
                 ay = screen_h - av.shape[0] - 20
