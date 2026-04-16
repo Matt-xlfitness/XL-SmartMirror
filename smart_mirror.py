@@ -477,21 +477,28 @@ def main():
         pass
     print(f"✓ Display: {screen_w}x{screen_h}")
 
-    # Pre-scale assets to CAMERA resolution (drawing happens on camera frame, GPU scales to screen)
-    av_h = int(cam_h * 0.52)
+    # Pre-scale assets to SCREEN resolution (overlays drawn crisp at full res)
+    av_h = int(screen_h * 0.52)
     scaled_avatars = {}
     for key, img in assets.items():
         if key == "logo" or img is None:
             continue
         scaled_avatars[key] = resize_asset(img, av_h)
 
-    logo_h = int(cam_h * 0.48)
+    logo_h = int(screen_h * 0.48)
     logo_img = None
     if logo_raw is not None:
         lh, lw = logo_raw.shape[:2]
         logo_w = int(logo_h * lw / lh)
         logo_resized = cv2.resize(logo_raw, (logo_w, logo_h), interpolation=cv2.INTER_AREA)
         logo_img = invert_logo(logo_resized)
+
+    # Pre-compute camera → screen scaling (cover crop)
+    cam_scale = max(screen_w / cam_w, screen_h / cam_h)
+    scaled_cam_w = int(cam_w * cam_scale)
+    scaled_cam_h = int(cam_h * cam_scale)
+    crop_ox = (scaled_cam_w - screen_w) // 2
+    crop_oy = (scaled_cam_h - screen_h) // 2
 
     # Fullscreen window
     win = "XL Fitness Smart Mirror"
@@ -527,24 +534,27 @@ def main():
         flex   = has_bicep_flex(keypoints)
         sm.update(person, flex)
 
-        # ── Draw everything on camera-sized frame (GPU scales on imshow) ──
-        display = frame
+        # ── Scale camera to screen (cover crop) ──
+        display = cv2.resize(frame, (scaled_cam_w, scaled_cam_h),
+                             interpolation=cv2.INTER_LINEAR)
+        display = display[crop_oy:crop_oy+screen_h,
+                          crop_ox:crop_ox+screen_w]
 
-        # ── Skeleton overlay (at camera res) ──
+        # ── Skeleton overlay (at screen res for crispness) ──
         draw_skeleton(display, keypoints,
-                      w=cam_w, h=cam_h,
+                      w=screen_w, h=screen_h,
                       threshold=0.3)
 
         # ── Logo top-centre ──
         if logo_img is not None:
-            lx = (cam_w - logo_img.shape[1]) // 2
-            overlay_png(display, logo_img, lx, 4)
+            lx = (screen_w - logo_img.shape[1]) // 2
+            overlay_png(display, logo_img, lx, 12)
 
         # ── Avatar bottom-right ──
         avatar = scaled_avatars.get(sm.avatar_key)
         if avatar is not None:
-            ax = cam_w - avatar.shape[1] - 4
-            ay = cam_h - avatar.shape[0] + 5
+            ax = screen_w - avatar.shape[1] - 10
+            ay = screen_h - avatar.shape[0] + 15
             overlay_png(display, avatar, ax, ay)
 
         # ── Speech bubble / hype text ──
@@ -552,16 +562,16 @@ def main():
         if bubble:
             if sm.state == "celebrate":
                 put_text_centred(display, bubble,
-                                 cam_h // 2,
-                                 scale=1.2, color=(51,87,255), thickness=3)
+                                 screen_h // 2,
+                                 scale=2.8, color=(51,87,255), thickness=4)
             elif sm.state == "compliment":
                 put_text_centred(display, bubble,
-                                 cam_h - int(cam_h * 0.42),
-                                 scale=0.7, color=(80,220,80), thickness=2)
+                                 screen_h - int(screen_h * 0.42),
+                                 scale=1.6, color=(80,220,80), thickness=3)
             else:
-                bx = cam_w - int(cam_w * 0.27)
-                by = cam_h - int(cam_h * 0.54)
-                draw_bubble(display, bubble, bx, by, scale=0.5)
+                bx = screen_w - int(screen_w * 0.27)
+                by = screen_h - int(screen_h * 0.54)
+                draw_bubble(display, bubble, bx, by)
 
         # ── FPS ──
         now = time.time()
@@ -570,8 +580,8 @@ def main():
             fps_count = 0
             fps_t     = now
         cv2.putText(display, f"{fps_disp}fps",
-                    (8, cam_h - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200,200,200), 1, cv2.LINE_AA)
+                    (10, screen_h - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1, cv2.LINE_AA)
 
         cv2.imshow(win, display)
 
