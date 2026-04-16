@@ -2,8 +2,9 @@
 """
 XL Fitness Smart Mirror — Raspberry Pi 4
 =========================================
-Simple version: live camera + skeleton overlay.
-When you do a double bicep flex — BIG CELEBRATION.
+Live camera + skeleton overlay.
+Avatar asks you to strike a pose — when you hit a double bicep flex,
+BIG CELEBRATION.
 
 Requirements:
     pip3 install tflite-runtime opencv-python "numpy<2" --break-system-packages
@@ -28,10 +29,24 @@ import random
 GITHUB_RAW = "https://raw.githubusercontent.com/Matt-xlfitness/XL-SmartMirror/main/assets"
 ASSETS_DIR = os.path.expanduser("~/smart_mirror_assets")
 
-LOGO_FILE = "SMARTMIRROR.png"
-CELEBRATE_AVATAR = "XLAvatar-Celebrating.png"
+ASSET_FILES = {
+    "wave":        "XLAvatar-Wave.png",
+    "point":       "XLAvatar-Point.png",
+    "pose":        "XLAvatar-01Pose.png",
+    "thumbsup":    "XLAvatar-ThumbsUp.png",
+    "celebrating": "XLAvatar-Celebrating.png",
+    "logo":        "SMARTMIRROR.png",
+}
+
 MOVENET_URL = "https://raw.githubusercontent.com/Matt-xlfitness/XL-SmartMirror/main/assets/movenet_lightning.tflite"
 MOVENET_FILE = "movenet_lightning.tflite"
+
+PROMPTS = [
+    "Strike a double bicep flex!",
+    "Show me those guns!",
+    "Hit a flex — arms out wide!",
+    "Let's see that pose!",
+]
 
 HYPE_MSGS = [
     "BEAST MODE!",
@@ -45,7 +60,8 @@ HYPE_MSGS = [
 ]
 
 CELEBRATION_SECONDS = 3.5
-COOLDOWN_SECONDS    = 2.0   # After celebration, wait before detecting again
+COOLDOWN_SECONDS    = 2.0
+PROMPT_ROTATE_SECONDS = 5.0
 
 # ── MoveNet keypoint indices (COCO 17) ────────────────────────────────────────
 KP_NOSE, KP_L_SHOULDER, KP_R_SHOULDER = 0, 5, 6
@@ -82,13 +98,17 @@ def download_if_missing(url, dest, label=""):
         print(f"  ✗ Failed: {e}")
         return False
 
-def load_optional_asset(filename):
-    """Download an asset from the repo and return the image (or None)."""
-    dest = os.path.join(ASSETS_DIR, filename)
-    url  = f"{GITHUB_RAW}/{filename}"
-    if download_if_missing(url, dest, filename):
-        return cv2.imread(dest, cv2.IMREAD_UNCHANGED)
-    return None
+def load_assets():
+    ensure_dir(ASSETS_DIR)
+    assets = {}
+    print("Loading assets...")
+    for key, fname in ASSET_FILES.items():
+        dest = os.path.join(ASSETS_DIR, fname)
+        if download_if_missing(f"{GITHUB_RAW}/{fname}", dest, key):
+            assets[key] = cv2.imread(dest, cv2.IMREAD_UNCHANGED)
+        else:
+            assets[key] = None
+    return assets
 
 def load_movenet():
     ensure_dir(ASSETS_DIR)
@@ -106,16 +126,12 @@ def load_movenet():
     return interp
 
 def run_movenet(interp, frame):
-    """Run MoveNet on a frame. Returns (17, 3) array of [y, x, conf]."""
     inp = interp.get_input_details()[0]
     out = interp.get_output_details()[0]
     h, w = inp['shape'][1], inp['shape'][2]
-
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     img = cv2.resize(img, (w, h))
-    dtype = inp['dtype']
-    img = np.expand_dims(img, 0).astype(dtype)
-
+    img = np.expand_dims(img, 0).astype(inp['dtype'])
     interp.set_tensor(inp['index'], img)
     interp.invoke()
     return interp.get_tensor(out['index'])[0][0]
@@ -165,6 +181,22 @@ def text_centred(frame, text, cy, scale, color, thickness):
     x = (frame.shape[1] - tw) // 2
     text_with_shadow(frame, text, x, cy, scale, color, thickness)
 
+def draw_bubble(frame, text, cx, cy, scale=1.2, thickness=2):
+    """Semi-transparent rounded rectangle with text inside, pointing down-right."""
+    f = cv2.FONT_HERSHEY_DUPLEX
+    (tw, th), bl = cv2.getTextSize(text, f, scale, thickness)
+    pad = 24
+    x1, y1 = cx - tw//2 - pad, cy - th - pad
+    x2, y2 = cx + tw//2 + pad, cy + bl + pad
+    x1, y1 = max(0, x1), max(0, y1)
+    x2 = min(frame.shape[1]-1, x2)
+    y2 = min(frame.shape[0]-1, y2)
+    ov = frame.copy()
+    cv2.rectangle(ov, (x1, y1), (x2, y2), (20, 20, 20), -1)
+    cv2.addWeighted(ov, 0.65, frame, 0.35, 0, frame)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
+    text_with_shadow(frame, text, cx - tw//2, cy, scale, (255, 255, 255), thickness)
+
 # ── Skeleton ──────────────────────────────────────────────────────────────────
 
 def draw_skeleton(frame, kp, w, h, threshold=0.3, color=(51, 87, 255)):
@@ -182,16 +214,17 @@ def draw_skeleton(frame, kp, w, h, threshold=0.3, color=(51, 87, 255)):
         if c > threshold:
             cv2.circle(frame, (int(x*w), int(y*h)), 7, color, -1, cv2.LINE_AA)
 
-# ── Flex detection ────────────────────────────────────────────────────────────
+# ── Detection ─────────────────────────────────────────────────────────────────
 
-def is_double_bicep_flex(kp, threshold=0.25):
-    """
-    Detects a double-arm bicep flex: both elbows roughly at shoulder height,
-    out wide, with wrists bent up/in (above elbow).
-    """
+def has_upper_body(kp, threshold=0.3):
     if kp is None:
         return False
+    upper = [KP_L_SHOULDER, KP_R_SHOULDER, KP_L_ELBOW, KP_R_ELBOW]
+    return sum(1 for i in upper if kp[i][2] > threshold) >= 3
 
+def is_double_bicep_flex(kp, threshold=0.25):
+    if kp is None:
+        return False
     ls_y, ls_x, ls_c = kp[KP_L_SHOULDER]
     rs_y, rs_x, rs_c = kp[KP_R_SHOULDER]
     le_y, le_x, le_c = kp[KP_L_ELBOW]
@@ -199,7 +232,6 @@ def is_double_bicep_flex(kp, threshold=0.25):
     lw_y, lw_x, lw_c = kp[KP_L_WRIST]
     rw_y, rw_x, rw_c = kp[KP_R_WRIST]
 
-    # Need both shoulders + both elbows + both wrists visible
     if min(ls_c, rs_c, le_c, re_c, lw_c, rw_c) < threshold:
         return False
 
@@ -209,20 +241,17 @@ def is_double_bicep_flex(kp, threshold=0.25):
 
     shoulder_mid_y = (ls_y + rs_y) / 2
 
-    # Left elbow should be OUT wide (further left than left shoulder, in mirror image)
-    # Right elbow should be OUT wide (further right than right shoulder)
+    # Elbows should be out wide
     left_wide  = le_x < ls_x + shoulder_w * 0.1
     right_wide = re_x > rs_x - shoulder_w * 0.1
     if not (left_wide and right_wide):
         return False
 
-    # Elbows roughly at shoulder height (not hanging down, not overhead)
-    elbow_ok = (abs(le_y - shoulder_mid_y) < shoulder_w * 1.2 and
-                abs(re_y - shoulder_mid_y) < shoulder_w * 1.2)
-    if not elbow_ok:
-        return False
+    # Elbows near shoulder height
+    if abs(le_y - shoulder_mid_y) > shoulder_w * 1.2: return False
+    if abs(re_y - shoulder_mid_y) > shoulder_w * 1.2: return False
 
-    # Wrists should be ABOVE (smaller y) the elbows — that's the flex
+    # Wrists above elbows (flexed up)
     left_flexed  = lw_y < le_y - shoulder_w * 0.1
     right_flexed = rw_y < re_y - shoulder_w * 0.1
 
@@ -241,9 +270,7 @@ def main():
     interp = load_movenet()
     print("✓ MoveNet loaded")
 
-    print("Loading assets...")
-    logo_raw = load_optional_asset(LOGO_FILE)
-    celebrate_raw = load_optional_asset(CELEBRATE_AVATAR)
+    assets = load_assets()
 
     # Camera
     print("Opening camera...")
@@ -265,7 +292,7 @@ def main():
     cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"✓ Camera: {cam_w}x{cam_h}")
 
-    # Screen resolution
+    # Screen
     screen_w, screen_h = 1920, 1080
     try:
         import subprocess, re
@@ -280,14 +307,17 @@ def main():
         pass
     print(f"✓ Display: {screen_w}x{screen_h}")
 
-    # Pre-scale logo + avatar at screen resolution
+    # Pre-scale avatars at screen resolution
+    av_h = int(screen_h * 0.55)
+    avatars = {k: resize_to_h(img, av_h) for k, img in assets.items()
+               if k != "logo" and img is not None}
+
+    # Logo
     logo_img = None
-    if logo_raw is not None:
-        logo_img = invert_rgb(resize_to_h(logo_raw, int(screen_h * 0.18)))
+    if assets.get("logo") is not None:
+        logo_img = invert_rgb(resize_to_h(assets["logo"], int(screen_h * 0.18)))
 
-    celebrate_img = resize_to_h(celebrate_raw, int(screen_h * 0.7))
-
-    # Camera → screen scaling (cover crop)
+    # Camera → screen scaling
     s = max(screen_w / cam_w, screen_h / cam_h)
     sw, sh = int(cam_w * s), int(cam_h * s)
     ox, oy = (sw - screen_w) // 2, (sh - screen_h) // 2
@@ -298,10 +328,12 @@ def main():
     cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     # State
-    keypoints = None
+    keypoints         = None
     celebrating_until = 0.0
     cooldown_until    = 0.0
     current_hype      = ""
+    current_prompt    = random.choice(PROMPTS)
+    prompt_rotated_at = time.time()
     pulse_t           = 0.0
 
     frame_n = 0
@@ -316,68 +348,88 @@ def main():
         frame_n += 1
         fps_count += 1
 
-        # Mirror
+        # Mirror flip
         frame = cv2.flip(frame, 1)
 
         # Inference every 2nd frame
         if frame_n % 2 == 0:
             keypoints = run_movenet(interp, frame)
 
-        now = time.time()
+        now         = time.time()
         celebrating = now < celebrating_until
+        person_here = has_upper_body(keypoints)
 
-        # Flex detection (only when not already celebrating and cooldown expired)
+        # Rotate prompt every few seconds when idle
+        if not celebrating and now - prompt_rotated_at >= PROMPT_ROTATE_SECONDS:
+            current_prompt = random.choice(PROMPTS)
+            prompt_rotated_at = now
+
+        # Flex detection (only when not celebrating + cooldown expired)
         if not celebrating and now >= cooldown_until:
             if is_double_bicep_flex(keypoints):
                 celebrating_until = now + CELEBRATION_SECONDS
                 cooldown_until    = celebrating_until + COOLDOWN_SECONDS
                 current_hype      = random.choice(HYPE_MSGS)
                 pulse_t           = now
-                celebrating = True
+                celebrating       = True
 
         # Scale camera to screen
         display = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_LINEAR)
         display = display[oy:oy+screen_h, ox:ox+screen_w]
 
-        # Skeleton (green when celebrating, orange otherwise)
+        # Skeleton
         skel_color = (0, 255, 80) if celebrating else (51, 87, 255)
         draw_skeleton(display, keypoints, screen_w, screen_h, color=skel_color)
 
-        # Logo (top centre, always)
+        # Logo top-centre (always)
         if logo_img is not None:
             lx = (screen_w - logo_img.shape[1]) // 2
             overlay_png(display, logo_img, lx, 20)
 
-        # Celebration overlay
+        # ── CELEBRATING ────────────────────────────────
         if celebrating:
-            # Semi-transparent dark overlay
-            overlay = display.copy()
-            cv2.rectangle(overlay, (0, 0), (screen_w, screen_h), (0, 0, 0), -1)
-            cv2.addWeighted(overlay, 0.35, display, 0.65, 0, display)
+            # Dim background
+            ov = display.copy()
+            cv2.rectangle(ov, (0, 0), (screen_w, screen_h), (0, 0, 0), -1)
+            cv2.addWeighted(ov, 0.35, display, 0.65, 0, display)
 
             # Pulsing hype text
             pulse = 1.0 + 0.15 * abs(np.sin((now - pulse_t) * 6))
-            hype_scale = 4.5 * pulse
             text_centred(display, current_hype,
-                         int(screen_h * 0.45),
-                         scale=hype_scale, color=(0, 255, 80), thickness=8)
+                         int(screen_h * 0.48),
+                         scale=4.5 * pulse, color=(0, 255, 80), thickness=8)
 
             # Celebrating avatar bottom-right
-            if celebrate_img is not None:
-                ax = screen_w - celebrate_img.shape[1] - 20
-                ay = screen_h - celebrate_img.shape[0] - 20
-                overlay_png(display, celebrate_img, ax, ay)
+            av = avatars.get("celebrating")
+            if av is not None:
+                ax = screen_w - av.shape[1] - 20
+                ay = screen_h - av.shape[0] - 20
+                overlay_png(display, av, ax, ay)
+
+        # ── IDLE / PROMPTING ───────────────────────────
+        else:
+            # Choose avatar: waving when nobody, pointing when someone is there
+            av_key = "point" if person_here else "wave"
+            av = avatars.get(av_key) or avatars.get("pose")
+            if av is not None:
+                ax = screen_w - av.shape[1] - 20
+                ay = screen_h - av.shape[0] - 20
+                overlay_png(display, av, ax, ay)
+
+                # Speech bubble above avatar
+                bx = ax + av.shape[1] // 2
+                by = ay - 30
+                draw_bubble(display, current_prompt, bx, by, scale=1.2, thickness=2)
 
         # FPS
         if now - fps_t >= 1.0:
             fps_disp, fps_count, fps_t = fps_count, 0, now
         cv2.putText(display, f"{fps_disp}fps",
                     (10, screen_h - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
         cv2.imshow(win, display)
-        key = cv2.waitKey(1) & 0xFF
-        if key in (ord('q'), ord('Q'), 27):
+        if cv2.waitKey(1) & 0xFF in (ord('q'), ord('Q'), 27):
             break
 
     cap.release()
