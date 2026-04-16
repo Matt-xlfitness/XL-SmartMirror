@@ -439,18 +439,19 @@ def main():
     interpreter = load_movenet_model()
     print("✓ MoveNet Lightning loaded")
 
-    # Open camera
+    # Open camera at 720p for crisp display — MoveNet downscales internally to 192x192
+    # so higher capture resolution costs almost nothing for inference.
     print("\nOpening camera...")
     cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS,          30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
-    # Try MJPG for higher framerate on USB cameras
+    # MJPG fourcc MUST be set before width/height for most USB cameras
     try:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
     except Exception:
         pass
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_FPS,          30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
 
     if not cap.isOpened():
         print("ERROR: Cannot open camera (index 0).")
