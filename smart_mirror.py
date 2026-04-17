@@ -419,7 +419,7 @@ def main():
             av = avatars.get("celebrating")
             if av is not None:
                 ax = screen_w - av.shape[1] - 20
-                ay = screen_h - av.shape[0] - 20
+                ay = screen_h - av.shape[0] + 40
                 overlay_png(display, av, ax, ay)
 
         # ── IDLE / PROMPTING ───────────────────────────
@@ -440,7 +440,7 @@ def main():
                 av = avatars.get("pose")
             if av is not None:
                 ax = screen_w - av.shape[1] - 20
-                ay = screen_h - av.shape[0] - 20
+                ay = screen_h - av.shape[0] + 40
                 overlay_png(display, av, ax, ay)
 
                 # Speech bubble above avatar
