@@ -193,20 +193,44 @@ def draw_bubble(frame, text, cx, cy, scale=1.2, thickness=2):
 
 # ── Skeleton ──────────────────────────────────────────────────────────────────
 
-def draw_skeleton(frame, kp, w, h, threshold=0.3, color=(51, 87, 255)):
+def hsv_to_bgr(h, s, v):
+    """Convert HSV (0-360, 0-1, 0-1) to BGR tuple."""
+    c = v * s
+    x = c * (1 - abs((h / 60) % 2 - 1))
+    m = v - c
+    if h < 60:    r, g, b = c, x, 0
+    elif h < 120: r, g, b = x, c, 0
+    elif h < 180: r, g, b = 0, c, x
+    elif h < 240: r, g, b = 0, x, c
+    elif h < 300: r, g, b = x, 0, c
+    else:         r, g, b = c, 0, x
+    return (int((b+m)*255), int((g+m)*255), int((r+m)*255))
+
+def draw_skeleton(frame, kp, w, h, threshold=0.3, color=(51, 87, 255), rainbow=False, t=0.0):
     if kp is None:
         return
-    for i, j in SKELETON:
+    n_bones = len(SKELETON)
+    for idx, (i, j) in enumerate(SKELETON):
         ya, xa, ca = kp[i]
         yb, xb, cb = kp[j]
         if ca < threshold or cb < threshold:
             continue
+        if rainbow:
+            hue = ((idx / n_bones) * 360 + t * 400) % 360
+            c = hsv_to_bgr(hue, 1.0, 1.0)
+        else:
+            c = color
         cv2.line(frame, (int(xa*w), int(ya*h)), (int(xb*w), int(yb*h)),
-                 color, 4, cv2.LINE_AA)
+                 c, 5, cv2.LINE_AA)
     for i in range(17):
         y, x, c = kp[i]
         if c > threshold:
-            cv2.circle(frame, (int(x*w), int(y*h)), 7, color, -1, cv2.LINE_AA)
+            if rainbow:
+                hue = ((i / 17) * 360 + t * 400) % 360
+                jc = hsv_to_bgr(hue, 1.0, 1.0)
+            else:
+                jc = color
+            cv2.circle(frame, (int(x*w), int(y*h)), 8, jc, -1, cv2.LINE_AA)
 
 # ── Detection ─────────────────────────────────────────────────────────────────
 
@@ -372,9 +396,9 @@ def main():
         display = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_LINEAR)
         display = display[oy:oy+screen_h, ox:ox+screen_w]
 
-        # Skeleton
-        skel_color = (0, 255, 80) if celebrating else (51, 87, 255)
-        draw_skeleton(display, keypoints, screen_w, screen_h, color=skel_color)
+        # Skeleton (rainbow when celebrating)
+        draw_skeleton(display, keypoints, screen_w, screen_h,
+                      color=(51, 87, 255), rainbow=celebrating, t=now)
 
         # Logo top-centre (always)
         if logo_img is not None:
@@ -383,16 +407,13 @@ def main():
 
         # ── CELEBRATING ────────────────────────────────
         if celebrating:
-            # Dim background
-            ov = display.copy()
-            cv2.rectangle(ov, (0, 0), (screen_w, screen_h), (0, 0, 0), -1)
-            cv2.addWeighted(ov, 0.35, display, 0.65, 0, display)
-
-            # Pulsing hype text
+            # Pulsing hype text (rainbow color cycles with the skeleton)
+            hype_hue = (now * 200) % 360
+            hype_color = hsv_to_bgr(hype_hue, 1.0, 1.0)
             pulse = 1.0 + 0.15 * abs(np.sin((now - pulse_t) * 6))
             text_centred(display, current_hype,
                          int(screen_h * 0.48),
-                         scale=4.5 * pulse, color=(0, 255, 80), thickness=8)
+                         scale=4.5 * pulse, color=hype_color, thickness=8)
 
             # Celebrating avatar bottom-right
             av = avatars.get("celebrating")
