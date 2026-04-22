@@ -369,12 +369,17 @@ def main():
 
     # State
     keypoints           = None
+    smoothed_kp         = None     # EMA-smoothed keypoints for stable rendering
+    kp_last_seen        = np.zeros(17)  # timestamp per joint when last had good confidence
     celebrating_until   = 0.0
     cooldown_until      = 0.0
     current_hype        = ""
     idle_cycle_started  = time.time()  # resets after each celebration
     was_celebrating     = False
     pulse_t             = 0.0
+
+    EMA_ALPHA     = 0.55    # how fast smoothed keypoints track raw (higher = snappier)
+    KP_HOLD_SECS  = 0.35    # keep drawing a joint this long after it drops below threshold
 
     frame_n = 0
     fps_t, fps_count, fps_disp = time.time(), 0, 0
@@ -420,17 +425,40 @@ def main():
         # Mirror flip
         frame = cv2.flip(frame, 1)
 
-        # Inference every 2nd frame (wrapped in try — a bad tensor shouldn't kill us)
-        if frame_n % 2 == 0:
-            try:
-                keypoints = run_movenet(interp, frame)
-            except Exception as e:
-                print(f"[mirror] inference error: {e}")
-                keypoints = None
+        # Inference every frame for smooth tracking (MoveNet Lightning is fast enough on Pi 4)
+        try:
+            keypoints = run_movenet(interp, frame)
+        except Exception as e:
+            print(f"[mirror] inference error: {e}")
+            keypoints = None
+
+        # ── Smooth keypoints + hold briefly when confidence dips ──
+        now_k = time.time()
+        if keypoints is not None:
+            if smoothed_kp is None:
+                smoothed_kp = keypoints.copy()
+                kp_last_seen[:] = now_k
+            else:
+                for i in range(17):
+                    thr = JOINT_THRESHOLDS.get(i, 0.3)
+                    if keypoints[i][2] >= thr:
+                        # good read — EMA-smooth position, refresh last-seen
+                        smoothed_kp[i][0] = EMA_ALPHA * keypoints[i][0] + (1 - EMA_ALPHA) * smoothed_kp[i][0]
+                        smoothed_kp[i][1] = EMA_ALPHA * keypoints[i][1] + (1 - EMA_ALPHA) * smoothed_kp[i][1]
+                        smoothed_kp[i][2] = keypoints[i][2]
+                        kp_last_seen[i]   = now_k
+                    elif now_k - kp_last_seen[i] < KP_HOLD_SECS:
+                        # recently had good read — keep position, decay confidence gently
+                        smoothed_kp[i][2] = max(smoothed_kp[i][2] * 0.9, thr)
+                    else:
+                        # stale — let confidence drop so draw_skeleton skips it
+                        smoothed_kp[i][2] = 0.0
 
         now         = time.time()
         celebrating = now < celebrating_until
-        person_here = has_upper_body(keypoints)
+        # Use smoothed keypoints for both display and detection — stops flicker
+        kp_for_use  = smoothed_kp if smoothed_kp is not None else keypoints
+        person_here = has_upper_body(kp_for_use)
 
         # Restart idle cycle the moment celebration ends
         if was_celebrating and not celebrating:
@@ -439,7 +467,7 @@ def main():
 
         # Flex detection (only when not celebrating + cooldown expired)
         if not celebrating and now >= cooldown_until:
-            if is_double_bicep_flex(keypoints):
+            if is_double_bicep_flex(kp_for_use):
                 celebrating_until = now + CELEBRATION_SECONDS
                 cooldown_until    = celebrating_until + COOLDOWN_SECONDS
                 current_hype      = random.choice(HYPE_MSGS)
@@ -451,8 +479,8 @@ def main():
         display = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_LINEAR)
         display = display[oy:oy+screen_h, ox:ox+screen_w]
 
-        # Skeleton (rainbow when celebrating)
-        draw_skeleton(display, keypoints, screen_w, screen_h,
+        # Skeleton (rainbow when celebrating) — use smoothed keypoints
+        draw_skeleton(display, kp_for_use, screen_w, screen_h,
                       color=(51, 87, 255), rainbow=celebrating, t=now)
 
         # Logo top-centre (always)
