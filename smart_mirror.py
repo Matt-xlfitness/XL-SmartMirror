@@ -65,16 +65,36 @@ KP_L_HIP, KP_R_HIP     = 11, 12
 KP_L_KNEE, KP_R_KNEE   = 13, 14
 KP_L_ANKLE, KP_R_ANKLE = 15, 16
 
+# Skeleton bones: (from, to, confidence_threshold).
+# Legs use a higher threshold — if they're cut off / off-camera we don't
+# want to draw jittery partial legs just because MoveNet guessed something.
 SKELETON = [
-    (KP_L_SHOULDER, KP_R_SHOULDER),
-    (KP_L_SHOULDER, KP_L_ELBOW), (KP_L_ELBOW, KP_L_WRIST),
-    (KP_R_SHOULDER, KP_R_ELBOW), (KP_R_ELBOW, KP_R_WRIST),
-    (KP_L_SHOULDER, KP_L_HIP),   (KP_R_SHOULDER, KP_R_HIP),
-    (KP_L_HIP, KP_R_HIP),
-    (KP_L_HIP, KP_L_KNEE), (KP_L_KNEE, KP_L_ANKLE),
-    (KP_R_HIP, KP_R_KNEE), (KP_R_KNEE, KP_R_ANKLE),
-    (KP_NOSE, KP_L_SHOULDER), (KP_NOSE, KP_R_SHOULDER),
+    (KP_L_SHOULDER, KP_R_SHOULDER, 0.30),
+    (KP_L_SHOULDER, KP_L_ELBOW,    0.30),
+    (KP_L_ELBOW,    KP_L_WRIST,    0.30),
+    (KP_R_SHOULDER, KP_R_ELBOW,    0.30),
+    (KP_R_ELBOW,    KP_R_WRIST,    0.30),
+    (KP_L_SHOULDER, KP_L_HIP,      0.35),
+    (KP_R_SHOULDER, KP_R_HIP,      0.35),
+    (KP_L_HIP,      KP_R_HIP,      0.40),
+    (KP_L_HIP,      KP_L_KNEE,     0.50),
+    (KP_L_KNEE,     KP_L_ANKLE,    0.50),
+    (KP_R_HIP,      KP_R_KNEE,     0.50),
+    (KP_R_KNEE,     KP_R_ANKLE,    0.50),
+    (KP_NOSE,       KP_L_SHOULDER, 0.25),
+    (KP_NOSE,       KP_R_SHOULDER, 0.25),
 ]
+
+# Per-joint confidence thresholds — legs require higher confidence to draw
+JOINT_THRESHOLDS = {
+    KP_NOSE: 0.25,
+    KP_L_SHOULDER: 0.30, KP_R_SHOULDER: 0.30,
+    KP_L_ELBOW: 0.30,    KP_R_ELBOW: 0.30,
+    KP_L_WRIST: 0.30,    KP_R_WRIST: 0.30,
+    KP_L_HIP: 0.40,      KP_R_HIP: 0.40,
+    KP_L_KNEE: 0.50,     KP_R_KNEE: 0.50,
+    KP_L_ANKLE: 0.50,    KP_R_ANKLE: 0.50,
+}
 
 # ── Downloads ─────────────────────────────────────────────────────────────────
 
@@ -206,14 +226,16 @@ def hsv_to_bgr(h, s, v):
     else:         r, g, b = c, 0, x
     return (int((b+m)*255), int((g+m)*255), int((r+m)*255))
 
-def draw_skeleton(frame, kp, w, h, threshold=0.3, color=(51, 87, 255), rainbow=False, t=0.0):
+def draw_skeleton(frame, kp, w, h, color=(51, 87, 255), rainbow=False, t=0.0):
+    """Draw skeleton. Legs use a higher confidence threshold so partial
+    off-camera bodies don't get forced, jittery leg lines."""
     if kp is None:
         return
     n_bones = len(SKELETON)
-    for idx, (i, j) in enumerate(SKELETON):
+    for idx, (i, j, bone_thr) in enumerate(SKELETON):
         ya, xa, ca = kp[i]
         yb, xb, cb = kp[j]
-        if ca < threshold or cb < threshold:
+        if ca < bone_thr or cb < bone_thr:
             continue
         if rainbow:
             hue = ((idx / n_bones) * 360 + t * 400) % 360
@@ -223,8 +245,8 @@ def draw_skeleton(frame, kp, w, h, threshold=0.3, color=(51, 87, 255), rainbow=F
         cv2.line(frame, (int(xa*w), int(ya*h)), (int(xb*w), int(yb*h)),
                  c, 5, cv2.LINE_AA)
     for i in range(17):
-        y, x, c = kp[i]
-        if c > threshold:
+        y, x, conf = kp[i]
+        if conf > JOINT_THRESHOLDS.get(i, 0.3):
             if rainbow:
                 hue = ((i / 17) * 360 + t * 400) % 360
                 jc = hsv_to_bgr(hue, 1.0, 1.0)
@@ -356,22 +378,55 @@ def main():
 
     frame_n = 0
     fps_t, fps_count, fps_disp = time.time(), 0, 0
+    failed_reads = 0          # consecutive failed camera reads
+    last_good_frame = time.time()
     print("\n✓ Running — strike a double bicep flex! Press Q to quit.\n")
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
+        # ── Resilient camera read ──────────────────────
+        try:
+            ret, frame = cap.read()
+        except Exception as e:
+            print(f"[mirror] camera read error: {e}")
+            ret, frame = False, None
+
+        if not ret or frame is None:
+            failed_reads += 1
+            # If camera has been dead for 3s, try to reopen it
+            if time.time() - last_good_frame > 3.0:
+                print("[mirror] camera stalled — reopening...")
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                cap = cv2.VideoCapture(0)
+                try:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                except Exception:
+                    pass
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                cap.set(cv2.CAP_PROP_FPS,          30)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+                last_good_frame = time.time()
             time.sleep(0.05)
             continue
+
+        failed_reads = 0
+        last_good_frame = time.time()
         frame_n += 1
         fps_count += 1
 
         # Mirror flip
         frame = cv2.flip(frame, 1)
 
-        # Inference every 2nd frame
+        # Inference every 2nd frame (wrapped in try — a bad tensor shouldn't kill us)
         if frame_n % 2 == 0:
-            keypoints = run_movenet(interp, frame)
+            try:
+                keypoints = run_movenet(interp, frame)
+            except Exception as e:
+                print(f"[mirror] inference error: {e}")
+                keypoints = None
 
         now         = time.time()
         celebrating = now < celebrating_until
@@ -455,13 +510,29 @@ def main():
                     (10, screen_h - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
-        cv2.imshow(win, display)
-        if cv2.waitKey(1) & 0xFF in (ord('q'), ord('Q'), 27):
-            break
+        try:
+            cv2.imshow(win, display)
+            if cv2.waitKey(1) & 0xFF in (ord('q'), ord('Q'), 27):
+                break
+        except Exception as e:
+            print(f"[mirror] display error: {e}")
+            time.sleep(0.1)
 
     cap.release()
     cv2.destroyAllWindows()
     print("Goodbye!")
 
 if __name__ == "__main__":
-    main()
+    # Watchdog: if main() crashes unexpectedly, restart after a short delay
+    # instead of exiting. Keeps the mirror running unattended on the wall.
+    while True:
+        try:
+            main()
+            break   # clean exit (user pressed Q) — don't restart
+        except KeyboardInterrupt:
+            print("\nInterrupted — bye.")
+            break
+        except Exception as e:
+            print(f"\n[mirror] FATAL: {e}")
+            print("[mirror] restarting in 3s...")
+            time.sleep(3)
