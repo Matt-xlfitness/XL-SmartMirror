@@ -262,7 +262,15 @@ def has_upper_body(kp, threshold=0.3):
     upper = [KP_L_SHOULDER, KP_R_SHOULDER, KP_L_ELBOW, KP_R_ELBOW]
     return sum(1 for i in upper if kp[i][2] > threshold) >= 3
 
-def is_double_bicep_flex(kp, threshold=0.25):
+def is_double_bicep_flex(kp, threshold=0.20):
+    """Lenient double-bicep detector.
+
+    True if BOTH arms have:
+      - wrist above (or roughly at) shoulder height
+      - elbow out wider than shoulder
+    That's it. No strict elbow-height or wrist-above-elbow distance check —
+    just the core silhouette of a double bicep flex.
+    """
     if kp is None:
         return False
     ls_y, ls_x, ls_c = kp[KP_L_SHOULDER]
@@ -276,26 +284,25 @@ def is_double_bicep_flex(kp, threshold=0.25):
         return False
 
     shoulder_w = abs(ls_x - rs_x)
-    if shoulder_w < 0.05:
+    if shoulder_w < 0.04:
         return False
 
     shoulder_mid_y = (ls_y + rs_y) / 2
 
-    # Elbows should be out wide
-    left_wide  = le_x < ls_x + shoulder_w * 0.1
-    right_wide = re_x > rs_x - shoulder_w * 0.1
-    if not (left_wide and right_wide):
+    # Elbows out wider than shoulders (any amount — very lenient)
+    left_elbow_out  = le_x <= ls_x
+    right_elbow_out = re_x >= rs_x
+    if not (left_elbow_out and right_elbow_out):
         return False
 
-    # Elbows near shoulder height
-    if abs(le_y - shoulder_mid_y) > shoulder_w * 1.2: return False
-    if abs(re_y - shoulder_mid_y) > shoulder_w * 1.2: return False
+    # Both wrists at or above shoulder height (allow small slack)
+    slack = shoulder_w * 0.4
+    left_wrist_up  = lw_y <= shoulder_mid_y + slack
+    right_wrist_up = rw_y <= shoulder_mid_y + slack
+    if not (left_wrist_up and right_wrist_up):
+        return False
 
-    # Wrists above elbows (flexed up)
-    left_flexed  = lw_y < le_y - shoulder_w * 0.1
-    right_flexed = rw_y < re_y - shoulder_w * 0.1
-
-    return left_flexed and right_flexed
+    return True
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -455,25 +462,28 @@ def main():
                         smoothed_kp[i][2] = 0.0
 
         now         = time.time()
-        celebrating = now < celebrating_until
-        # Use smoothed keypoints for both display and detection — stops flicker
         kp_for_use  = smoothed_kp if smoothed_kp is not None else keypoints
         person_here = has_upper_body(kp_for_use)
 
-        # Restart idle cycle the moment celebration ends
-        if was_celebrating and not celebrating:
+        # Live flex check every frame
+        currently_flexing = is_double_bicep_flex(kp_for_use)
+
+        # First time triggering after cooldown → start celebration timer
+        if currently_flexing and not celebrating and now >= cooldown_until:
+            celebrating_until = now + CELEBRATION_SECONDS
+            current_hype      = random.choice(HYPE_MSGS)
+            pulse_t           = now
+
+        # Rainbow skeleton trigger:
+        #   - while holding the flex, OR
+        #   - during the celebration timer (so it keeps flashing briefly after release)
+        celebrating = currently_flexing or now < celebrating_until
+
+        # Cooldown only starts after the celebration timer fully finishes
+        if not celebrating and was_celebrating:
+            cooldown_until     = now + COOLDOWN_SECONDS
             idle_cycle_started = now
         was_celebrating = celebrating
-
-        # Flex detection (only when not celebrating + cooldown expired)
-        if not celebrating and now >= cooldown_until:
-            if is_double_bicep_flex(kp_for_use):
-                celebrating_until = now + CELEBRATION_SECONDS
-                cooldown_until    = celebrating_until + COOLDOWN_SECONDS
-                current_hype      = random.choice(HYPE_MSGS)
-                pulse_t           = now
-                celebrating       = True
-                was_celebrating   = True
 
         # Scale camera to screen
         display = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_LINEAR)
