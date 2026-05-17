@@ -18,7 +18,7 @@ sudo apt update -y && sudo apt upgrade -y
 
 # ── Install Python dependencies ───────────────────
 echo "[2/5] Installing Python dependencies..."
-pip3 install tflite-runtime opencv-python numpy --break-system-packages
+pip3 install tflite-runtime opencv-python "numpy<2" --break-system-packages
 
 # ── Clone the repo ────────────────────────────────
 echo "[3/5] Downloading XL Smart Mirror..."
@@ -31,24 +31,26 @@ else
     cd XL-SmartMirror
 fi
 
+chmod +x start.sh
+
 # ── Download assets + model ───────────────────────
 echo "[4/5] Pre-downloading assets and MoveNet model..."
 python3 -c "
 import smart_mirror
 smart_mirror.load_assets()
-smart_mirror.load_movenet_model()
+smart_mirror.load_movenet()
 print('Assets & model ready!')
 "
 
-# ── Setup autostart (optional) ────────────────────
+# ── Setup autostart ───────────────────────────────
 echo "[5/5] Setting up autostart on boot..."
 AUTOSTART_DIR="$HOME/.config/autostart"
 mkdir -p "$AUTOSTART_DIR"
-cat > "$AUTOSTART_DIR/smart-mirror.desktop" << 'EOF'
+cat > "$AUTOSTART_DIR/smart-mirror.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=XL Smart Mirror
-Exec=bash -c "sleep 10 && cd ~/XL-SmartMirror && python3 smart_mirror.py"
+Exec=bash -c "sleep 10 && $HOME/XL-SmartMirror/start.sh"
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
@@ -59,9 +61,10 @@ echo "════════════════════════�
 echo "  Setup complete!"
 echo "══════════════════════════════════════════════════"
 echo ""
-echo "  To run now:    cd ~/XL-SmartMirror && python3 smart_mirror.py"
-echo "  Auto-start:    Enabled (runs on boot after 10s)"
+echo "  To run now:    ~/XL-SmartMirror/start.sh"
+echo "  Auto-start:    Enabled (pulls latest + launches on boot)"
 echo "  To disable:    rm ~/.config/autostart/smart-mirror.desktop"
+echo "  Logs:          tail -f ~/xlf_logs/smart_mirror.log"
 echo ""
 echo "  Press Q or ESC to quit the mirror app."
 echo "══════════════════════════════════════════════════"
