@@ -6,6 +6,16 @@
 # ══════════════════════════════════════════════════
 set -e
 
+# Make `systemctl --user` reachable even over SSH.
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+
+if ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "ERROR: cannot reach your user systemd bus (XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR)."
+    echo "Fix: run this from the Pi's OWN desktop terminal, or enable lingering first:"
+    echo "     sudo loginctl enable-linger $USER   (then log out/in or reboot, and re-run)"
+    exit 1
+fi
+
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_DIR="$HOME/.config/systemd/user"
 UNIT="$SERVICE_DIR/xl-mirror.service"
