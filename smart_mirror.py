@@ -80,6 +80,8 @@ MAX_PERSONS = 5
 AVATAR_HEIGHT_FRAC = 0.40
 LOGO_WIDTH_FRAC    = 0.27
 AVATAR_MARGIN      = 24
+AVATAR_CX_FRAC     = 0.65   # avatar horizontal centre (0.5 = middle, 1.0 = right edge)
+AVATAR_BOTTOM_FRAC = 1.06   # avatar bottom vs screen height (>1.0 = bleeds below edge)
 SHOW_SKELETON      = True
 INVERT_LOGO        = True
 CAM_W, CAM_H, CAM_FPS = 1280, 720, 30
@@ -653,10 +655,18 @@ def detect_screen_size(default=(1920, 1080)):
     return default
 
 
+def avatar_pos(av, screen_w, screen_h):
+    """Top-left (x, y) for the avatar, from the centre/bottom fractions."""
+    ax = int(screen_w * AVATAR_CX_FRAC - av.shape[1] / 2)
+    ay = int(screen_h * AVATAR_BOTTOM_FRAC - av.shape[0])
+    return ax, ay
+
+
 def draw_avatar(display, av, screen_w, screen_h):
     if av is None:
         return
-    overlay_png(display, av, screen_w - av.shape[1] - AVATAR_MARGIN, screen_h - av.shape[0])
+    ax, ay = avatar_pos(av, screen_w, screen_h)
+    overlay_png(display, av, ax, ay)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -765,8 +775,8 @@ def run_live():
                 av = avatars.get(key)
                 draw_avatar(display, av, screen_w, screen_h)
                 if text and av is not None:
-                    ax = screen_w - av.shape[1] - AVATAR_MARGIN
-                    draw_bubble(display, text, ax + av.shape[1] // 2, screen_h - av.shape[0] - 20)
+                    ax, ay = avatar_pos(av, screen_w, screen_h)
+                    draw_bubble(display, text, ax + av.shape[1] // 2, ay - 20)
 
             fps_n += 1
             if now - fps_t >= 1.0:
