@@ -759,7 +759,7 @@ def run_live():
             mirror.update(persons, now)
             state = mirror.state
 
-            if SHOW_SKELETON and state in (WAITING, CELEBRATE):
+            if SHOW_SKELETON:                       # always on — live feedback
                 draw_skeleton(display, persons, rainbow=(state == CELEBRATE), t=now)
             if logo is not None:
                 overlay_png(display, logo, (screen_w - logo.shape[1]) // 2, 20)
