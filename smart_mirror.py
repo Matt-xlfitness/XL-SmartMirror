@@ -41,6 +41,10 @@ import numpy as np
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(SCRIPT_DIR, "assets")
 
+# Liveness heartbeat — the render loop refreshes this file every ~2s. The daily
+# health check restarts the service if it goes stale (frozen but "running").
+HEARTBEAT_FILE = os.path.expanduser("~/.cache/xl-mirror/heartbeat")
+
 ASSET_FILES = {
     "logo":        "SMARTMIRROR.png",
     "wave":        "XLAvatar-Wave.png",
@@ -718,10 +722,22 @@ def run_live():
 
     mirror = Mirror()
     fps_t, fps_n, fps_disp = time.time(), 0, 0
+    try:
+        os.makedirs(os.path.dirname(HEARTBEAT_FILE), exist_ok=True)
+    except Exception:
+        pass
+    last_hb = 0.0
     print("\n✓ Running — strike a double bicep flex! Press Q to quit.\n")
 
     while True:
         now = time.time()
+        if now - last_hb >= 2.0:               # liveness heartbeat
+            try:
+                with open(HEARTBEAT_FILE, "w") as f:
+                    f.write(str(int(now)))
+            except Exception:
+                pass
+            last_hb = now
         frame = camera.latest()
         persons = infer.latest()
 
