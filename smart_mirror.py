@@ -402,10 +402,19 @@ def text_centred(frame, text, cy, scale, color, thickness):
 
 def draw_bubble(frame, text, cx, cy, scale=1.2, thickness=2):
     f = cv2.FONT_HERSHEY_DUPLEX
-    (tw, th), bl = cv2.getTextSize(text, f, scale, thickness)
+    W = frame.shape[1]
     pad = 24
+    (tw, th), bl = cv2.getTextSize(text, f, scale, thickness)
+    # Shrink to fit the screen width if the text is too wide.
+    max_w = W - 2 * pad - 20
+    if tw > max_w:
+        scale = max(0.6, scale * max_w / tw)
+        (tw, th), bl = cv2.getTextSize(text, f, scale, thickness)
+    # Clamp the centre so the whole bubble stays on screen (no clipping).
+    half = tw // 2 + pad
+    cx = min(max(cx, half), W - half)
     x1, y1 = max(0, cx - tw // 2 - pad), max(0, cy - th - pad)
-    x2, y2 = min(frame.shape[1] - 1, cx + tw // 2 + pad), min(frame.shape[0] - 1, cy + bl + pad)
+    x2, y2 = min(W - 1, cx + tw // 2 + pad), min(frame.shape[0] - 1, cy + bl + pad)
     ov = frame.copy()
     cv2.rectangle(ov, (x1, y1), (x2, y2), (20, 20, 20), -1)
     cv2.addWeighted(ov, 0.65, frame, 0.35, 0, frame)
