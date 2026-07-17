@@ -678,6 +678,17 @@ def draw_avatar(display, av, screen_w, screen_h):
     overlay_png(display, av, ax, ay)
 
 
+def disable_screen_blanking():
+    """Kiosk: stop the TV blanking / screensaver / power-saving."""
+    import subprocess
+    for cmd in (["xset", "s", "off"], ["xset", "-dpms"], ["xset", "s", "noblank"]):
+        try:
+            subprocess.run(cmd, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 #  Static-image self-test (validate the decoder without a camera)
 # ════════════════════════════════════════════════════════════════════════════════
@@ -738,6 +749,11 @@ def run_live():
     win = "XL Fitness Smart Mirror"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    try:                                            # kiosk: stay above popups
+        cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
+    except Exception:
+        pass
+    disable_screen_blanking()
 
     mirror = Mirror()
     fps_t, fps_n, fps_disp = time.time(), 0, 0
